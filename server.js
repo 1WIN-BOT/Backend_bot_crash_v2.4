@@ -1,18 +1,24 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Variables pour stocker les données (en production, utiliser une base de données)
+// Variables pour stocker les données
 let predictionHistory = [];
 let pendingVerification = [];
+
+// Constantes de configuration
+const MIN_ODDS = 1.50;
+const MIN_PROBABILITY = 70.00;
+const SAFE_PREDICTION_MIN = 90.00;
+const MAX_VERIFICATION_ROUNDS = 3; // Changé de 5 à 3
+const REQUIRED_COEFFICIENTS = 5;
 
 // Fonctions de calcul de prédiction (logique protégée)
 function calculateTrend(oddsArray) {
@@ -27,8 +33,8 @@ function predictOdds(coefficients, settings) {
     let oddsArray = [...coefficients]
         .filter(odd => !isNaN(odd) && odd > 1);
 
-    if (oddsArray.length < 5) {
-        throw new Error('Au moins 5 coefficients sont requis');
+    if (oddsArray.length < REQUIRED_COEFFICIENTS) {
+        throw new Error(`Au moins ${REQUIRED_COEFFICIENTS} coefficients sont requis`);
     }
 
     if (settings.excludeExtremes) {
@@ -53,13 +59,157 @@ function predictOdds(coefficients, settings) {
     }
 
     const probabilities = oddsArray.map(odd => (1 / odd * 100).toFixed(2));
+    const mainProbability = parseFloat(probabilities[0]);
+    
+    // Récupérer les valeurs de filtrage
+    const minOdds = settings.minOdds || MIN_ODDS;
+    const minProbability = settings.minProbability || MIN_PROBABILITY;
+    
+    // Vérifier si la prédiction respecte les filtres
+    const meetsFilters = averageOdds >= minOdds && mainProbability >= minProbability;
+    
+    if (!meetsFilters) {
+        throw new Error(`Prédiction filtrée (côte: ${averageOdds.toFixed(2)} < ${minOdds} ou probabilité: ${mainProbability}% < ${minProbability}%)`);
+    }
+
+    // Vérifier si c'est une prédiction sûre
+    const isSafePrediction = mainProbability >= SAFE_PREDICTION_MIN;
 
     return {
         averageOdds: averageOdds.toFixed(2),
         probabilities: probabilities,
-        originalOdds: oddsArray
+        originalOdds: oddsArray,
+        meetsFilters: meetsFilters,
+        isSafePrediction: isSafePrediction,
+        mainProbability: mainProbability
     };
 }
+
+// Route racine
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Backend - Robot de Prédiction Pro V2.5</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background: linear-gradient(135deg, #f0f9ff, #e6f7ff);
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .container {
+                    text-align: center;
+                    background: white;
+                    padding: 40px;
+                    border-radius: 12px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                    max-width: 600px;
+                }
+                h1 {
+                    color: #1e3a8a;
+                    margin-bottom: 10px;
+                }
+                .status {
+                    color: #10b981;
+                    font-weight: bold;
+                    margin: 20px 0;
+                    font-size: 1.2rem;
+                }
+                .version {
+                    background: #3b82f6;
+                    color: white;
+                    padding: 4px 12px;
+                    border-radius: 20px;
+                    font-size: 0.9rem;
+                    display: inline-block;
+                    margin-bottom: 20px;
+                }
+                .filters {
+                    background: #fef3c7;
+                    border-left: 4px solid #f59e0b;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin: 20px 0;
+                    text-align: left;
+                }
+                .endpoints {
+                    text-align: left;
+                    background: #f9fafb;
+                    padding: 20px;
+                    border-radius: 8px;
+                    margin-top: 20px;
+                }
+                .endpoint-item {
+                    margin: 10px 0;
+                    padding: 8px;
+                    background: white;
+                    border-radius: 6px;
+                    border-left: 4px solid #3b82f6;
+                }
+                code {
+                    background: #e5e7eb;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    font-family: monospace;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🤖 Backend - Robot de Prédiction Pro</h1>
+                <div class="version">Version 2.5 - Filtrage Intelligent</div>
+                <div class="status">✅ Serveur opérationnel</div>
+                
+                <div class="filters">
+                    <h3>🎯 Filtres Actifs :</h3>
+                    <ul>
+                        <li><strong>Côte minimum :</strong> ${MIN_ODDS}</li>
+                        <li><strong>Probabilité minimum :</strong> ${MIN_PROBABILITY}%</li>
+                        <li><strong>Prédictions sûres :</strong> ≥ ${SAFE_PREDICTION_MIN}%</li>
+                        <li><strong>Vérification :</strong> ${MAX_VERIFICATION_ROUNDS} rounds</li>
+                    </ul>
+                </div>
+                
+                <div class="endpoints">
+                    <h3>📡 Endpoints disponibles :</h3>
+                    <div class="endpoint-item">
+                        <code>GET /api/coefficients</code> - Récupère les coefficients
+                    </div>
+                    <div class="endpoint-item">
+                        <code>POST /api/predict</code> - Génère une prédiction (avec filtrage)
+                    </div>
+                    <div class="endpoint-item">
+                        <code>POST /api/verify</code> - Vérifie une prédiction (${MAX_VERIFICATION_ROUNDS} rounds)
+                    </div>
+                    <div class="endpoint-item">
+                        <code>GET /api/history</code> - Récupère l'historique
+                    </div>
+                    <div class="endpoint-item">
+                        <code>GET /api/stats</code> - Récupère les statistiques
+                    </div>
+                    <div class="endpoint-item">
+                        <code>GET /api/analyze</code> - Analyse les données historiques
+                    </div>
+                </div>
+                
+                <p style="margin-top: 20px; color: #6b7280; font-size: 0.9rem;">
+                    Frontend connecté : 
+                    <a href="https://crash-v2-4.onrender.com" target="_blank" style="color: #3b82f6;">
+                        https://crash-v2-4.onrender.com
+                    </a>
+                </p>
+            </div>
+        </body>
+        </html>
+    `);
+});
 
 // API pour récupérer les coefficients
 app.get('/api/coefficients', async (req, res) => {
@@ -109,9 +259,11 @@ app.post('/api/predict', (req, res) => {
         }
 
         const prediction = predictOdds(coefficients, settings || {
-            analysisMode: 'standard',
-            excludeExtremes: false,
-            trendAnalysis: false
+            analysisMode: 'pro',
+            excludeExtremes: true,
+            trendAnalysis: false,
+            minOdds: MIN_ODDS,
+            minProbability: MIN_PROBABILITY
         });
 
         const predictionResult = {
@@ -120,28 +272,37 @@ app.post('/api/predict', (req, res) => {
             averageOdds: prediction.averageOdds,
             probabilities: prediction.probabilities,
             originalOdds: coefficients.join(', '),
-            analysisMode: settings?.analysisMode || 'standard',
+            analysisMode: settings?.analysisMode || 'pro',
             status: 'pending',
-            verificationStatus: 'pending'
+            verificationStatus: 'pending',
+            meetsFilters: prediction.meetsFilters,
+            isSafePrediction: prediction.isSafePrediction,
+            mainProbability: prediction.mainProbability,
+            verifiedRound: null,
+            round: null
         };
 
         // Ajouter à l'historique
         predictionHistory.unshift(predictionResult);
         
-        // Limiter l'historique aux 50 dernières entrées
-        if (predictionHistory.length > 50) {
-            predictionHistory = predictionHistory.slice(0, 50);
+        // Limiter l'historique aux 100 dernières entrées
+        if (predictionHistory.length > 100) {
+            predictionHistory = predictionHistory.slice(0, 100);
         }
 
         res.json({
             success: true,
             prediction: predictionResult,
-            historySize: predictionHistory.length
+            historySize: predictionHistory.length,
+            message: prediction.isSafePrediction ? 
+                'Prédiction de haute qualité générée (≥90%)' : 
+                'Prédiction générée avec succès'
         });
     } catch (error) {
-        res.status(500).json({
+        res.status(400).json({
             success: false,
-            error: error.message
+            error: error.message,
+            code: error.message.includes('filtrée') ? 'FILTERED_PREDICTION' : 'PREDICTION_ERROR'
         });
     }
 });
@@ -150,6 +311,7 @@ app.post('/api/predict', (req, res) => {
 app.post('/api/verify', (req, res) => {
     try {
         const { predictionId, currentCoefficient, currentRound } = req.body;
+        const maxRounds = MAX_VERIFICATION_ROUNDS;
         
         const predictionIndex = predictionHistory.findIndex(p => p.id === predictionId);
         if (predictionIndex === -1) {
@@ -173,19 +335,20 @@ app.post('/api/verify', (req, res) => {
             predictionHistory[predictionIndex].status = 'success';
             predictionHistory[predictionIndex].verificationStatus = 'success';
             predictionHistory[predictionIndex].verifiedRound = currentRound;
+            predictionHistory[predictionIndex].round = currentRound;
             result = {
                 verified: true,
                 status: 'success',
                 round: currentRound
             };
-        } else if (currentRound >= 5) {
-            // Échec après 5 rounds
+        } else if (currentRound >= maxRounds) {
+            // Échec après maxRounds rounds
             predictionHistory[predictionIndex].status = 'failed';
             predictionHistory[predictionIndex].verificationStatus = 'failed';
             result = {
                 verified: false,
                 status: 'failed',
-                message: 'Non validée dans les 5 rounds'
+                message: `Non validée dans les ${maxRounds} rounds`
             };
         }
 
@@ -211,7 +374,8 @@ app.get('/api/history', (req, res) => {
             total: predictionHistory.length,
             success: predictionHistory.filter(p => p.status === 'success').length,
             failed: predictionHistory.filter(p => p.status === 'failed').length,
-            pending: predictionHistory.filter(p => p.status === 'pending').length
+            pending: predictionHistory.filter(p => p.status === 'pending').length,
+            safePredictions: predictionHistory.filter(p => p.isSafePrediction).length
         }
     });
 });
@@ -222,6 +386,12 @@ app.get('/api/stats', (req, res) => {
     const total = predictionHistory.length;
     const accuracy = total > 0 ? ((success / total) * 100).toFixed(1) : '0';
 
+    // Statistiques des prédictions sûres
+    const safePredictions = predictionHistory.filter(p => p.isSafePrediction);
+    const safeSuccess = safePredictions.filter(p => p.status === 'success').length;
+    const safeAccuracy = safePredictions.length > 0 ? 
+        ((safeSuccess / safePredictions.length) * 100).toFixed(1) : '0';
+
     res.json({
         success: true,
         stats: {
@@ -229,50 +399,18 @@ app.get('/api/stats', (req, res) => {
             predictionAccuracy: accuracy,
             successCount: success,
             failedCount: predictionHistory.filter(p => p.status === 'failed').length,
-            pendingCount: predictionHistory.filter(p => p.status === 'pending').length
+            pendingCount: predictionHistory.filter(p => p.status === 'pending').length,
+            safePredictions: safePredictions.length,
+            safePredictionAccuracy: safeAccuracy,
+            safeSuccessCount: safeSuccess,
+            minOdds: MIN_ODDS,
+            minProbability: MIN_PROBABILITY,
+            maxVerificationRounds: MAX_VERIFICATION_ROUNDS
         }
     });
 });
 
-// API pour analyser les données historiques
-app.get('/api/analyze', (req, res) => {
-    try {
-        const successfulPredictions = predictionHistory.filter(p => p.status === 'success');
-        
-        if (successfulPredictions.length === 0) {
-            return res.json({
-                success: true,
-                analysis: {
-                    hasData: false,
-                    message: 'Pas encore assez de données pour l\'analyse'
-                }
-            });
-        }
-
-        // Analyse des plages de probabilité
-        const percentageRanges = analyzePercentageRanges(successfulPredictions);
-        const roundAnalysis = analyzeRounds(successfulPredictions);
-        const oddsAnalysis = analyzeOddsRanges(successfulPredictions);
-
-        res.json({
-            success: true,
-            analysis: {
-                hasData: true,
-                percentageRanges,
-                roundAnalysis,
-                oddsAnalysis,
-                totalSuccessful: successfulPredictions.length
-            }
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
-// Fonctions d'analyse (protégées côté backend)
+// Fonctions d'analyse
 function analyzePercentageRanges(predictions) {
     const ranges = {};
     const allPredictions = predictionHistory.filter(p => p.status !== 'pending');
@@ -374,8 +512,121 @@ function analyzeOddsRanges(predictions) {
     };
 }
 
+// API pour analyser les données historiques
+app.get('/api/analyze', (req, res) => {
+    try {
+        const successfulPredictions = predictionHistory.filter(p => p.status === 'success');
+        
+        if (successfulPredictions.length === 0) {
+            return res.json({
+                success: true,
+                analysis: {
+                    hasData: false,
+                    message: 'Pas encore assez de données pour l\'analyse'
+                }
+            });
+        }
+
+        // Analyse des plages de probabilité
+        const percentageRanges = analyzePercentageRanges(successfulPredictions);
+        const roundAnalysis = analyzeRounds(successfulPredictions);
+        const oddsAnalysis = analyzeOddsRanges(successfulPredictions);
+        
+        // Analyse des prédictions sûres (90-100%)
+        const safePredictions = predictionHistory.filter(p => p.isSafePrediction && p.status !== 'pending');
+        const safeSuccess = safePredictions.filter(p => p.status === 'success').length;
+        const safePredictionSuccessRate = safePredictions.length > 0 ? 
+            ((safeSuccess / safePredictions.length) * 100).toFixed(1) : '0';
+        
+        // Analyse des prédictions filtrées
+        const filteredPredictions = predictionHistory.filter(p => !p.meetsFilters);
+        const totalFiltered = filteredPredictions.length;
+
+        res.json({
+            success: true,
+            analysis: {
+                hasData: true,
+                percentageRanges,
+                roundAnalysis,
+                oddsAnalysis,
+                safePredictions: safePredictions.length,
+                safeSuccessCount: safeSuccess,
+                safePredictionSuccessRate,
+                totalSuccessful: successfulPredictions.length,
+                totalFiltered: totalFiltered,
+                configuration: {
+                    minOdds: MIN_ODDS,
+                    minProbability: MIN_PROBABILITY,
+                    safePredictionThreshold: SAFE_PREDICTION_MIN,
+                    maxVerificationRounds: MAX_VERIFICATION_ROUNDS
+                }
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// API pour obtenir la configuration
+app.get('/api/config', (req, res) => {
+    res.json({
+        success: true,
+        config: {
+            minOdds: MIN_ODDS,
+            minProbability: MIN_PROBABILITY,
+            safePredictionMin: SAFE_PREDICTION_MIN,
+            maxVerificationRounds: MAX_VERIFICATION_ROUNDS,
+            requiredCoefficients: REQUIRED_COEFFICIENTS,
+            version: '2.5',
+            description: 'Robot de Prédiction Pro - Version Filtrage Intelligent'
+        }
+    });
+});
+
+// Route pour réinitialiser l'historique (développement seulement)
+app.post('/api/reset', (req, res) => {
+    const { secret } = req.body;
+    
+    if (secret !== process.env.RESET_SECRET) {
+        return res.status(401).json({
+            success: false,
+            error: 'Non autorisé'
+        });
+    }
+    
+    predictionHistory = [];
+    pendingVerification = [];
+    
+    res.json({
+        success: true,
+        message: 'Historique réinitialisé'
+    });
+});
+
+// Route de santé
+app.get('/api/health', (req, res) => {
+    res.json({
+        success: true,
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
+        historySize: predictionHistory.length,
+        pendingVerifications: pendingVerification.length
+    });
+});
+
 // Démarrer le serveur
 app.listen(PORT, () => {
-    console.log(`Serveur backend démarré sur le port ${PORT}`);
-    console.log(`API disponible sur: http://localhost:${PORT}/api/`);
+    console.log(`🚀 Serveur backend démarré sur le port ${PORT}`);
+    console.log(`📡 API disponible sur: http://localhost:${PORT}/`);
+    console.log(`🔗 Frontend: https://crash-v2-4.onrender.com`);
+    console.log(`🎯 Configuration:`);
+    console.log(`   - Côte minimum: ${MIN_ODDS}`);
+    console.log(`   - Probabilité minimum: ${MIN_PROBABILITY}%`);
+    console.log(`   - Prédictions sûres: ≥ ${SAFE_PREDICTION_MIN}%`);
+    console.log(`   - Vérification: ${MAX_VERIFICATION_ROUNDS} rounds`);
 });
