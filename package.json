@@ -1,7 +1,7 @@
 {
   "name": "prediction-backend",
   "version": "2.5.0",
-  "description": "Backend sécurisé pour le robot de prédiction avec filtrage intelligent",
+  "description": "Backend sécurisé pour le robot de prédiction",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
